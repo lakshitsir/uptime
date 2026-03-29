@@ -1,8 +1,11 @@
 const { Telegraf } = require('telegraf');
 const axios = require('axios');
-const { kv } = require('@vercel/kv');
+const Redis = require('ioredis');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
+
+// 🚀 Connect to New Vercel Redis Database
+const redis = new Redis(process.env.STORAGE_REDIS_URL);
 
 // 🛡️ ANTI-BAN ENGINE
 const proAxios = axios.create({
@@ -13,22 +16,24 @@ const proAxios = axios.create({
     }
 });
 
-// 🧠 SMART URL FORMATTER (Max Intelligent Feature)
+// 🧠 SMART URL FORMATTER
 const formatUrl = (inputUrl) => {
     if (!inputUrl) return null;
-    // Agar http ya https nahi hai, toh default https:// laga do
     if (!inputUrl.startsWith('http://') && !inputUrl.startsWith('https://')) {
         return `https://${inputUrl}`;
     }
     return inputUrl;
 };
 
-// 1. Instant Deep Scan Command
+// ==========================================
+// 🤖 TELEGRAM COMMANDS
+// ==========================================
+
 bot.command('prouptime', async (ctx) => {
     const rawUrl = ctx.message.text.split(' ')[1];
     const url = formatUrl(rawUrl);
 
-    if (!url) return ctx.reply('⚠️ Format: `/prouptime site.com` ya `/prouptime https://site.com`', { parse_mode: 'Markdown' });
+    if (!url) return ctx.reply('⚠️ Format: `/prouptime site.com`', { parse_mode: 'Markdown' });
     
     const start = Date.now();
     ctx.reply(`⚡ Stealth Scanning: ${url}...`);
@@ -40,53 +45,52 @@ bot.command('prouptime', async (ctx) => {
     }
 });
 
-// 2. Add Target (Smart Auto-Fix + Custom Seconds)
 bot.command('add', async (ctx) => {
     const args = ctx.message.text.split(' ');
     const rawUrl = args[1];
     const seconds = parseInt(args[2]);
-    
     const url = formatUrl(rawUrl);
 
     if (!url || !seconds) {
-        return ctx.reply('⚠️ Format: `/add site.com 60`\n(URL aur seconds dono zaroori hain)', { parse_mode: 'Markdown' });
+        return ctx.reply('⚠️ Format: `/add site.com 60`', { parse_mode: 'Markdown' });
     }
 
-    let targets = (await kv.get('uptime_targets')) || [];
+    let targetsData = await redis.get('uptime_targets');
+    let targets = targetsData ? JSON.parse(targetsData) : [];
     
     const existingIndex = targets.findIndex(t => t.url === url);
     if (existingIndex !== -1) {
         targets[existingIndex].interval = seconds; 
-        await kv.set('uptime_targets', targets);
+        await redis.set('uptime_targets', JSON.stringify(targets));
         return ctx.reply(`✅ Updated! ${url} -> ${seconds}s.`);
     }
 
     targets.push({ url, interval: seconds, lastPing: 0 });
-    await kv.set('uptime_targets', targets);
+    await redis.set('uptime_targets', JSON.stringify(targets));
     ctx.reply(`🔥 Max Power Engaged!\n✅ Added: ${url}\n⏱️ Interval: ${seconds}s.`);
 });
 
-// 3. Remove Target
 bot.command('remove', async (ctx) => {
     const rawUrl = ctx.message.text.split(' ')[1];
     const url = formatUrl(rawUrl);
 
     if (!url) return ctx.reply('⚠️ Format: `/remove site.com`', { parse_mode: 'Markdown' });
 
-    let targets = (await kv.get('uptime_targets')) || [];
+    let targetsData = await redis.get('uptime_targets');
+    let targets = targetsData ? JSON.parse(targetsData) : [];
     const filteredTargets = targets.filter(t => t.url !== url);
 
     if (targets.length === filteredTargets.length) {
         return ctx.reply(`❌ Yeh URL list mein nahi hai. Check using /list`);
     }
 
-    await kv.set('uptime_targets', filteredTargets);
+    await redis.set('uptime_targets', JSON.stringify(filteredTargets));
     ctx.reply(`🗑️ Removed: ${url}`);
 });
 
-// 4. List All Targets
 bot.command('list', async (ctx) => {
-    let targets = (await kv.get('uptime_targets')) || [];
+    let targetsData = await redis.get('uptime_targets');
+    let targets = targetsData ? JSON.parse(targetsData) : [];
     if (targets.length === 0) return ctx.reply('📂 List khali hai bro.');
 
     let msg = `📋 **Active Protected Targets:**\n\n`;
@@ -96,7 +100,9 @@ bot.command('list', async (ctx) => {
     ctx.reply(msg, { parse_mode: 'Markdown' });
 });
 
+// ==========================================
 // 🛡️ THE "FULLY HARD" ANTI-BAN WAKE ENGINE
+// ==========================================
 module.exports = async (req, res) => {
     try {
         if (req.method === 'POST') {
@@ -105,7 +111,8 @@ module.exports = async (req, res) => {
         }
 
         if (req.method === 'GET' && req.query.cron === 'wake') {
-            let targets = (await kv.get('uptime_targets')) || [];
+            let targetsData = await redis.get('uptime_targets');
+            let targets = targetsData ? JSON.parse(targetsData) : [];
             const now = Math.floor(Date.now() / 1000); 
             let updated = false;
             
@@ -124,7 +131,7 @@ module.exports = async (req, res) => {
             }
 
             if (updated) {
-                await kv.set('uptime_targets', targets);
+                await redis.set('uptime_targets', JSON.stringify(targets));
             }
 
             return res.status(200).send('Anti-Ban Cron Executed. Systems Awake.');
@@ -133,6 +140,6 @@ module.exports = async (req, res) => {
         res.status(200).send('Professional Uptime Bot Live! 🚀');
     } catch (error) {
         console.error('System Error:', error);
-        res.status(500).send('Error Ignored to Prevent Ban');
+        res.status(500).send('Error Details: ' + error.message);
     }
 };
